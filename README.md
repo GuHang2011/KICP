@@ -1,47 +1,83 @@
-# KICP Project
+# KICP · Multimodal Fake News Detection
 
-本项目是一个基于 CLIP、Prompt Learning、Co-Attention 和知识检索的多模态假新闻检测实验工程，主要面向 GossipCop 和 PolitiFact 数据集。
+A research implementation for exploring CLIP features, co-attention, continuous prompt vectors, and knowledge retrieval on GossipCop and PolitiFact data.
 
-仓库只保留代码、配置和目录占位文件；真实数据、图片、知识向量、训练输出和本地虚拟环境不上传到 GitHub。
+The repository includes model components, data preparation scripts, training/evaluation entry points, and component checks. Datasets, CLIP weights, generated knowledge embeddings, and trained checkpoints are external assets. These instructions describe the current code; they do not establish reproduction of published results.
 
-## 项目结构
+**中文概述：** 面向多模态假新闻检测的实验工程，包含 CLIP 特征提取、协同注意力、连续提示向量和知识检索模块。仓库提供代码与配置，真实数据、模型权重和实验产物需单独准备。
 
-```text
-KICP_project/
-  configs/                 # smoke test 配置
-  datasets/                # Dataset 与 Collator
-  models/                  # KICP 模型组件
-  scripts/                 # 数据处理、知识库构建、训练与检查脚本
-  data/                    # 本地数据目录，不上传真实数据
-  knowledge/               # 本地知识库与向量目录，不上传生成文件
-  train.py                 # 基础训练入口
-  test.py                  # 测试入口
-  train_config.py          # 配置化训练入口
-  requirements.txt         # Python 依赖
-```
+## Start here
 
-## 环境安装
+| Goal | Entry point |
+| --- | --- |
+| Understand the model | [Model assembly](models/kicp_model.py) and [repository guide](docs/REPOSITORY_GUIDE.md) |
+| Inspect the data interface | [Dataset](datasets/kicp_dataset.py) |
+| Check components without model downloads | [Minimal checks](#minimal-checks) |
+| Run a small training job | [train.py](train.py) or [train_config.py](train_config.py) |
+| Train with external knowledge | [train_real_knowledge.py](scripts/train_real_knowledge.py) |
+| Prepare files for sharing | [Upload guide](GITHUB_UPLOAD_GUIDE.md) |
 
-建议使用 Python 3.9 或更高版本。
+## Implementation
 
-```bash
+- **CLIP encoder:** extracts text token/image patch sequences and pooled features. The default is `openai/clip-vit-large-patch14-336`; the supplied training entry points freeze CLIP parameters.
+- **Co-attention:** combines text and image sequences into a shared representation.
+- **Prompt learner:** averages trainable prompt vectors and adds that context to trainable class embeddings for classification. It does not inject prompts into the CLIP text encoder.
+- **Knowledge retrieval:** supports a simulated trainable bank or a local file of CLIP-encoded Wikidata text embeddings. With knowledge enabled, omitting the embedding file selects the simulated bank.
+
+See the [code map and experiment notes](docs/REPOSITORY_GUIDE.md) for entry-point differences and historical scripts.
+
+## Installation
+
+Use Python 3.9 or newer in an isolated environment. [requirements.txt](requirements.txt) specifies minimum versions, not a locked or exhaustively tested environment. For GPU use, install a matching PyTorch/torchvision build using the [PyTorch installation guide](https://pytorch.org/get-started/locally/), then install the remaining requirements.
+
+```sh
+git clone https://github.com/GuHang2011/KICP.git
+cd KICP
 python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
 ```
 
-如果使用 GPU，请按本机 CUDA 版本安装对应的 PyTorch。
+Activate with `.venv\Scripts\Activate.ps1` in PowerShell, `.venv\Scripts\activate.bat` in Windows Command Prompt, or `source .venv/bin/activate` on Linux/macOS. Then:
 
-## 数据准备
+```sh
+python -m pip install -r requirements.txt
+```
 
-本仓库不包含真实数据和图片。请自行准备数据，并放到以下目录：
+Run commands from the repository root. CLIP-dependent commands use Hugging Face `from_pretrained` and may download processor files and weights on first use. Where available, `--clip_model_name` also accepts a compatible local model directory. A one-epoch CPU run still loads CLIP-Large and is not a lightweight installation test.
+
+## Minimal checks
+
+These scripts use synthetic tensors and installed dependencies, with no dataset, CLIP download, or knowledge file:
+
+```sh
+python scripts/check_prompt_learner.py
+python scripts/check_co_attention.py
+python scripts/check_knowledge_retriever.py
+```
+
+They print shapes and gradient diagnostics. Inspect those values: these are component inspection scripts, not a full correctness or benchmark suite.
+
+After preparing a CSV, inspect samples without loading CLIP:
+
+```sh
+python scripts/check_dataset.py --csv data/processed/politifact.csv --max_samples 5
+```
+
+The following additionally needs CLIP processor files and weights, downloaded or cached:
+
+```sh
+python scripts/check_clip_encoder.py --csv data/processed/politifact.csv --max_samples 2 --batch_size 1 --device cpu
+```
+
+## Data and external assets
+
+Prepare data locally in this layout:
 
 ```text
 data/
   processed/
     gossipcop.csv
     politifact.csv
-    gossipcop_full.csv
+    gossipcop_full.csv       # optional prepared article data
     politifact_full.csv
   images/
     gossipcop/
@@ -51,64 +87,40 @@ knowledge/
   wikidata_knowledge_politifact_embeddings.pt
 ```
 
-训练 CSV 至少需要包含：
+Training CSVs require `id,text,image_path,label`, with `0 = real` and `1 = fake`. Relative image paths resolve from the working directory. Knowledge construction additionally expects `title`; see the [preparation workflow](docs/REPOSITORY_GUIDE.md#data-and-knowledge-preparation).
 
-```text
-id,text,image_path,label
+The loader substitutes a white image for missing or unreadable files. Check image coverage separately before interpreting an experiment as using real images. The local merge helper deliberately uses placeholder images for initial pipeline checks.
+
+Raw news, images, external model weights, generated knowledge files, and training outputs are not distributed here. Obtain data from its original sources and follow their access and use conditions. Knowledge embeddings must match the selected CLIP representation and model dimension; retain the embedding file when evaluating a real-knowledge checkpoint.
+
+## Small training runs
+
+With prepared data and CLIP assets available, these commands use a **simulated trainable knowledge bank**. Each CSV needs enough examples of both classes for the stratified train/validation split.
+
+```sh
+python train.py --csv data/processed/politifact.csv --dataset_name politifact --output_dir outputs/politifact_smoke --max_samples 20 --epochs 1 --batch_size 1 --device cpu
+python train.py --csv data/processed/gossipcop.csv --dataset_name gossipcop --output_dir outputs/gossipcop_smoke --max_samples 20 --epochs 1 --batch_size 1 --device cpu
 ```
 
-其中 `image_path` 是图片路径，`label` 是二分类标签。
+Alternatively, the supplied YAML examples select up to 100 samples and three epochs on CPU:
 
-## 快速运行
-
-小样本 smoke test：
-
-```bash
-python train.py --csv data/processed/politifact.csv --dataset_name politifact --max_samples 20 --epochs 1 --batch_size 1 --device cpu
-
-python train.py --csv data/processed/gossipcop.csv --dataset_name gossipcop --max_samples 20 --epochs 1 --batch_size 1 --device cpu
+```sh
+python train_config.py --config configs/politifact_smoke.yaml
+python train_config.py --config configs/gossipcop_smoke.yaml
 ```
 
-论文参数复现实验：
+For **external Wikidata knowledge embeddings**, use the dedicated entry point:
 
-```bash
-python scripts/train_paper_reproduction.py ^
-  --csv data/processed/gossipcop_full.csv ^
-  --dataset_name gossipcop_kicp_full_paper ^
-  --output_dir outputs/gossipcop_kicp_full_paper ^
-  --knowledge_embedding_path knowledge/wikidata_knowledge_gossipcop_embeddings.pt ^
-  --max_samples 0 ^
-  --epochs 20 ^
-  --batch_size 1 ^
-  --device cpu ^
-  --lr 0.00003 ^
-  --weight_decay 0.001 ^
-  --dropout 0.6 ^
-  --coattention_heads 8 ^
-  --prompt_length 16 ^
-  --top_k_text 5 ^
-  --top_k_image 5
+```sh
+python scripts/train_real_knowledge.py --csv data/processed/politifact_full.csv --dataset_name politifact_real --output_dir outputs/politifact_real --knowledge_embedding_path knowledge/wikidata_knowledge_politifact_embeddings.pt --max_samples 20 --epochs 1 --batch_size 1 --device cpu
 ```
 
-```bash
-python scripts/train_paper_reproduction.py ^
-  --csv data/processed/politifact_full.csv ^
-  --dataset_name politifact_kicp_full_paper ^
-  --output_dir outputs/politifact_kicp_full_paper ^
-  --knowledge_embedding_path knowledge/wikidata_knowledge_politifact_embeddings.pt ^
-  --max_samples 0 ^
-  --epochs 20 ^
-  --batch_size 1 ^
-  --device cpu ^
-  --lr 0.00003 ^
-  --weight_decay 0.001 ^
-  --dropout 0.6 ^
-  --coattention_heads 8 ^
-  --prompt_length 16 ^
-  --top_k_text 5 ^
-  --top_k_image 5
-```
+Training writes split CSVs and checkpoints beneath the selected output directory. Real-knowledge training also writes `logs/train_log.csv`. Use separate output directories to retain each run. Small-sample runs check the workflow; they do not establish generalization performance.
 
-## GitHub 上传说明
+## Evaluation and experiment records
 
-上传前请查看 [GITHUB_UPLOAD_GUIDE.md](GITHUB_UPLOAD_GUIDE.md)。重点是不要上传 `.venv/`、`data/` 中的真实数据、`knowledge/` 中的生成文件和 `outputs/`。
+Pair [test.py](test.py) with the default `train.py` architecture. Pair [test_real_knowledge.py](scripts/test_real_knowledge.py) with real-knowledge training and its original embedding file. Match architecture settings at evaluation time: the scripts do not automatically reconstruct every setting from a checkpoint.
+
+The existing `*_paper_reproduction.py` filenames are retained as experiment entry points. Their names do not certify equivalence to a paper. The [repository guide](docs/REPOSITORY_GUIDE.md#training-and-evaluation-entry-points) documents their configurable architecture and matching evaluator.
+
+For reportable results, retain the exact revision, resolved dependencies, model identifier, data provenance, image coverage, split CSVs, seed, full configuration, and evaluation outputs. Reserve an independent test set; training creates train/validation splits, not a separate benchmark test set.
